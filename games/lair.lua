@@ -86,7 +86,7 @@ local function start_attract_mode(after_game_over)
     start_scene('attract_mode', after_game_over)
 end
 
-local function game_over(won)
+local function game_over(_)
     DirkSimple.log("Game over!")
     if (scene_manager.current_scene ~= nil) and (scene_manager.current_scene.game_over ~= nil) then
         start_sequence("game_over")
@@ -181,8 +181,12 @@ local function choose_next_scene(is_resurrection)
             end
 
             local choice = (current_ticks % #eligible) + 1
-            scene_manager.chosen[scene_manager.current_row][eligible_columns[choice]] = true
-            start_scene(eligible[choice], is_resurrection)
+            if eligible_columns[choice] and scene_manager.current_row and
+                scene_manager.chosen[scene_manager.current_row] then
+
+                scene_manager.chosen[scene_manager.current_row][eligible_columns[choice]] = true
+                start_scene(eligible[choice], is_resurrection)
+            end
         end
     end
 end
@@ -213,10 +217,12 @@ local function setup_scene_manager()
 
     for i,v in ipairs(scene_manager.rows) do
         scene_manager.chosen[i] = {}
-        for j,v2 in ipairs(v) do
+        for j, _ in ipairs(v) do
             scene_manager.chosen[i][j] = false
         end
     end
+
+    scene_manager.autoplay = false
 end
 
 local function start_game()
@@ -227,6 +233,10 @@ local function start_game()
     -- cabinet, regardless of dip switch settings? Would have been nice to
     -- know when this cost a dollar per run!
     scene_manager.infinite_lives = (current_inputs.held["up"] and current_inputs.held["left"])
+
+    -- Not part of the original arcade, but a fun way to watch the entire game 
+    -- unfold.
+    scene_manager.autoplay = (current_inputs.held["down"] and current_inputs.held["left"])
 
     choose_next_scene(false)
 end
@@ -247,6 +257,25 @@ local function kill_player()
     end
 end
 
+local function check_death_scene(tab)
+    if tab["points"] then
+        return false
+    end
+    local sequence = tab["nextsequence"]
+    if sequence then
+        if scene_manager.current_scene[sequence].kills_player then
+            return true
+        end
+
+        if scene_manager.current_scene[sequence].inputs == nil and scene_manager.current_scene[sequence].timeout then
+            return check_death_scene(scene_manager.current_scene[sequence].timeout)
+        end
+        return false
+    end
+
+    return true
+end
+
 local function check_actions(inputs)
     if accepted_input ~= nil then
         return true  -- ignore all input until end of sequence.
@@ -254,14 +283,24 @@ local function check_actions(inputs)
 
     local actions = scene_manager.current_sequence.actions
     if actions ~= nil then
-        for i,v in ipairs(actions) do
+        for _,v in ipairs(actions) do
             -- ignore if not in the time window for this input.
             if (scene_manager.current_sequence_ticks >= v.from) and (scene_manager.current_sequence_ticks <= v.to) then
-                local input = v.input
-                if inputs.pressed[input] then  -- we got one!
-                    DirkSimple.log("accepted action '" .. input .. "' at " .. tostring(scene_manager.current_sequence_ticks / 1000.0))
-                    accepted_input = v
-                    return true
+
+                if scene_manager.autoplay then
+                    if not check_death_scene(v) then
+                        local input = v.input
+                        DirkSimple.log("Autopilot accepted action '" .. input .. "' at " .. tostring(scene_manager.current_sequence_ticks / 1000.0))
+                        accepted_input = v
+                        return true
+                    end
+                else
+                    local input = v.input
+                    if inputs.pressed[input] then  -- we got one!
+                        DirkSimple.log("accepted action '" .. input .. "' at " .. tostring(scene_manager.current_sequence_ticks / 1000.0))
+                        accepted_input = v
+                        return true
+                    end
                 end
             end
         end
@@ -339,16 +378,17 @@ DirkSimple.serialize = function()
     state[#state + 1] = scene_manager.current_cycle
     state[#state + 1] = scene_manager.total_failed
 
-    for i,v in ipairs(scene_manager.failed) do
+    for _,v in ipairs(scene_manager.failed) do
         state[#state + 1] = v
     end
 
     for i,v in ipairs(scene_manager.rows) do
-        for j,v2 in ipairs(v) do
+        for j,_ in ipairs(v) do
             state[#state + 1] = scene_manager.chosen[i][j]
         end
     end
 
+    state[#state + 1] = scene_manager.autoplay
     return state
 end
 
@@ -374,15 +414,17 @@ DirkSimple.unserialize = function(state)
     scene_manager.unserialize_offset = scene_manager.current_sequence_ticks + scene_manager.current_sequence_tick_offset
     scene_manager.current_sequence_tick_offset = 0  -- unserialize_offset will handle everything up until now, until the next sequence starts.
 
-    for i = 1, scene_manager.total_failed, 1 do
+    for _ = 1, scene_manager.total_failed, 1 do
         scene_manager.failed[#scene_manager.failed + 1] = state[idx] ; idx = idx + 1
     end
 
     for i,v in ipairs(scene_manager.rows) do
-        for j,v2 in ipairs(v) do
+        for j,_ in ipairs(v) do
             scene_manager.chosen[i][j] = state[idx] ; idx = idx + 1
         end
     end
+
+    scene_manager.autoplay = state[idx] ; idx = idx + 1
 
     if scene_manager.current_scene_name ~= nil then
         scene_manager.current_scene = scenes[scene_manager.current_scene_name]
